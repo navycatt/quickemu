@@ -735,6 +735,82 @@ function vm_boot() {
     done
   fi
 
+  # Detect available shared file system
+  local KERNEL_MAGOR=$(uname -r | cut -d '.' -f1)
+  local KERNEL_MINOR=$(uname -r | cut -d '.' -f2)
+  local VIRTIOFS="/usr/lib/qemu/virtiofsd"
+  local SHARE_FS=""
+
+  case ${guest_os} in
+    linux)
+      if [ "${KERNEL_MAGOR}" -ge 5 ] && [ "${KERNEL_MINOR}" -ge 4 ] && [ -e "${VIRTIOFS}" ]; then
+        SHARE_FS="VIRTIOFS"
+      else
+        SHARE_FS="9P"
+      fi
+      ;;
+    macos)
+      SHARE_FS="9P";;
+    windows|*)
+      SHARE_FS="";;
+  esac
+
+  if [ -z "${PUBLIC}" ]; then
+    SHARE_FS=""
+  fi
+
+  # Have any share folders been requested?
+  local SHARES=""
+  local NOTICE_MOUNT=""
+  local NOTICE_AUTOMOUNT=""
+
+  echo " - FOLDERS:  Share folders requested:"
+  for i in "${!share_folders[@]}"; do
+    FOLDER=$(echo "${share_folders[i]}" | cut -d':' -f1)
+    FOLDER_TAG=$(echo "${share_folders[i]}" | cut -d':' -f2)
+    FOLDER_BASENAME="~/$(basename ${FOLDER})"
+    echo "              - ${FOLDER} => ${FOLDER_TAG}"
+
+    # Virtio fs
+    if [ "${SHARE_FS}" == "VIRTIOFS" ]; then
+      local VIRTFS_SOCKET="/var/run/qemu/${VMNAME}-vhost${i}-fs.sock"
+      sudo bash -c "${VIRTIOFS} --socket-path=${VIRTFS_SOCKET} --socket-group=${USER} -o source=${FOLDER} -o log_level=err >/dev/null 2>&1 &"
+
+      SHARES+="-chardev socket,id=fsdev${i},path=${VIRTFS_SOCKET}
+       -device vhost-user-fs-pci,chardev=fsdev${i},tag=${FOLDER_TAG}
+       -object memory-backend-memfd,id=mem,size=${RAM_VM},share=on -numa node,memdev=mem"
+
+      NOTICE_MOUNT+="${NOTICE_MOUNT:+; }sudo mount -t virtiofs ${FOLDER_TAG} ${FOLDER_BASENAME}"
+      NOTICE_AUTOMOUNT+="${NOTICE_AUTOMOUNT:+\n}${FOLDER_TAG} ${FOLDER} virtiofs _netdev 0 0"
+
+    # 9p
+    elif [ "${SHARE_FS}" == "9P" ]; then
+      SHARES+="-fsdev local,id=fsdev${i},path=${FOLDER},security_model=mapped-xattr
+       -device virtio-9p-pci,fsdev=fsdev${i},mount_tag=${FOLDER_TAG}"
+
+      NOTICE_MOUNT+="${NOTICE_MOUNT:+; }sudo mount -t 9p -o trans=virtio,version=9p2000.L,msize=104857600 ${FOLDER_TAG} ${FOLDER_BASENAME}"
+      NOTICE_AUTOMOUNT+="${NOTICE_AUTOMOUNT:+\n}${FOLDER_TAG} ${FOLDER} 9p trans=virtio,_netdev,version=9p2000.L,msize=104857600 0 0"
+    fi
+  done
+
+  if [ -n "${SHARE_FS}" ]; then
+    printf "%-13s" " - ${SHARE_FS}:"
+    echo -n "On guest: "
+    if [ "${guest_os}" == "linux" ]; then
+      echo ${NOTICE_MOUNT}" or: sudo cat >> /etc/fstab << EOL"
+      echo -e ${NOTICE_AUTOMOUNT}
+      echo "EOL"
+    elif [ "${guest_os}" == "macos" ]; then
+      # PUBLICSHARE needs to be world writeable for seamless integration with
+      # macOS. Test if it is world writeable, and prompt what to do if not.
+      echo "sudo mount_9p ${PUBLIC_TAG}"
+      if [ "${PUBLIC_PERMS}" != "drwxrwxrwx" ]; then
+        echo " - 9P:       On host:  chmod 777 ${PUBLIC}"
+        echo "             Required for macOS integration 👆"
+      fi
+    fi
+  fi
+
   # Find a free port for spice
   local SPICE="disable-ticketing=on"
   local SPICE_PORT=""
@@ -768,21 +844,6 @@ function vm_boot() {
         *)
           echo " - WebDAV:   On guest: dav://localhost:9843/";;
       esac
-    fi
-  fi
-
-  if [ "${guest_os}" != "windows" ] && [ -n "${PUBLIC}" ]; then
-    echo -n " - 9P:       On guest: "
-    if [ "${guest_os}" == "linux" ]; then
-      echo "sudo mount -t 9p -o trans=virtio,version=9p2000.L,msize=104857600 ${PUBLIC_TAG} ~/$(basename "${PUBLIC}")"
-    elif [ "${guest_os}" == "macos" ]; then
-      # PUBLICSHARE needs to be world writeable for seamless integration with
-      # macOS. Test if it is world writeable, and prompt what to do if not.
-      echo "sudo mount_9p ${PUBLIC_TAG}"
-      if [ "${PUBLIC_PERMS}" != "drwxrwxrwx" ]; then
-        echo " - 9P:       On host:  chmod 777 ${PUBLIC}"
-        echo "             Required for macOS integration 👆"
-      fi
     fi
   fi
 
@@ -937,8 +998,7 @@ function vm_boot() {
   # https://askubuntu.com/questions/772784/9p-libvirt-qemu-share-modes
   if [ "${guest_os}" != "windows" ] && [ -n "${PUBLIC}" ]; then
       # shellcheck disable=SC2054
-      args+=(-fsdev local,id=fsdev0,path="${PUBLIC}",security_model=mapped-xattr
-             -device virtio-9p-pci,fsdev=fsdev0,mount_tag="${PUBLIC_TAG}")
+      args+=(${SHARES})
   fi
 
   if [ -n "${USB_PASSTHROUGH}" ]; then
@@ -1017,25 +1077,6 @@ function usage() {
   exit 1
 }
 
-# Lowercase variables are used in the VM config file only
-boot="efi"
-bridge=""
-cpu_cores=""
-disk_img=""
-disk_size=""
-fixed_iso=""
-floppy=""
-guest_os="linux"
-img=""
-iso=""
-macos_release=""
-port_forwards=()
-preallocation="off"
-ram=""
-secureboot="off"
-tpm="off"
-usb_devices=()
-
 DELETE=0
 FULLSCREEN=""
 FULLSPICY=""
@@ -1054,10 +1095,6 @@ VMDIR=""
 VMNAME=""
 VMPATH=""
 
-readonly LAUNCHER=$(basename "${0}")
-readonly DISK_MIN_SIZE=$((197632 * 8))
-readonly VERSION="2.3.2"
-
 # PUBLICSHARE is the only directory exposed to guest VMs for file
 # sharing via 9P, spice-webdavd and Samba. This path is not configurable.
 if command -v xdg-user-dir &>/dev/null; then
@@ -1073,6 +1110,29 @@ if command -v xdg-user-dir &>/dev/null; then
     PUBLIC=""
   fi
 fi
+
+# Lowercase variables are used in the VM config file only
+boot="efi"
+bridge=""
+cpu_cores=""
+disk_img=""
+disk_size=""
+fixed_iso=""
+floppy=""
+guest_os="linux"
+img=""
+iso=""
+macos_release=""
+share_folders=("${PUBLIC}:${PUBLIC_TAG}")
+preallocation="off"
+ram=""
+secureboot="off"
+tpm="off"
+usb_devices=()
+
+readonly LAUNCHER=$(basename "${0}")
+readonly DISK_MIN_SIZE=$((197632 * 8))
+readonly VERSION="2.3.2"
 
 # TODO: Make this run the native architecture binary
 QEMU=$(command -v qemu-system-x86_64)
