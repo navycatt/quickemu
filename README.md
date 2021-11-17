@@ -466,6 +466,31 @@ Add an additional line to your virtual machine configuration
 
   * `bridge="br0"`
 
+# Share folders
+
+### Linux & MacOS
+
+Add an additional line to your virtual machine configuration. For example:
+
+  * `share_folders+=("/home/user/Public/:Public-user")`
+
+It is also possible to set multiple shared folders. For example:
+
+  * `share_folders+=("/home/user/Public/:Public-user" "/home/user/Projects/:Projects-user")`
+
+If you want to overwrite default preset:
+
+  * `share_folders=("PUBLIC:PUBLIC_TAG")`
+
+then use `=` instead `+=`. For example:
+
+  * `share_folders=("/home/user/Projects/:Projects-user")`
+  
+### Windows
+
+Use SPICE with WebDAV.
+
+
 # USB redirection
 
 Quickemu supports USB redirection via SPICE pass-through and host pass-through.
