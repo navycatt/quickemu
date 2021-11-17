@@ -1,3 +1,9 @@
+# Differences from mantained version
+1) Shared folder configuration feature which allows to override automatic assignment
+2) Port forwards configuration feature which allows to override automatic assignment
+3) Virtiofs support for linux systems
+4) Disabled SPICE features if they are not requested as display
+
 <h1 align="center">
   <img src=".github/logo.png" alt="Quickemu" width="256" />
   <br />
