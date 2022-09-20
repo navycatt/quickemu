@@ -774,7 +774,7 @@ function vm_boot() {
     # Virtio fs
     if [ "${SHARE_FS}" == "VIRTIOFS" ]; then
       local VIRTFS_SOCKET="/var/run/qemu/${VMNAME}-vhost${i}-fs.sock"
-      sudo bash -c "${VIRTIOFS} --socket-path=${VIRTFS_SOCKET} --socket-group=${USER} -o source=${FOLDER} -o log_level=err >/dev/null 2>&1 &"
+      pkexec env DISPLAY=$DISPLAY XAUTHORITY=$XAUTHORITY DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS bash -c "${VIRTIOFS} --socket-path=${VIRTFS_SOCKET} --socket-group=${USER} -o source=${FOLDER} -o log_level=err >/dev/null 2>&1 &"
 
       SHARES+="-chardev socket,id=fsdev${i},path=${VIRTFS_SOCKET}
        -device vhost-user-fs-pci,chardev=fsdev${i},tag=${FOLDER_TAG}
